@@ -18,6 +18,8 @@ const pool = new Pool({
 
 const textFile = 'biblia.txt';
 
+
+
 const createTableWords = async () => {
   try {
     const client = await pool.connect();
@@ -38,26 +40,66 @@ const createTableWords = async () => {
 };
 
 const populateDatabase = async () => {
+  let startTime = new Date().getTime();
+  try {
+    const text = await readFileAsync(textFile, 'utf8');
+    const words = text.toUpperCase().split(/\s+/); // Convert to uppercase
+
+    const client = await pool.connect();
     try {
-      const text = await readFileAsync(textFile, 'utf8');
-      const words = text.toUpperCase().split(/\s+/); // Convert to uppercase
-  
-      const client = await pool.connect();
-      try {
-        for (let i = 0; i < words.length; i++) {
-          await client.query('INSERT INTO words (word, index, who_delivered) VALUES ($1, $2, $3)', [words[i], i, 'SYSTEM']);
-          let progress = Math.round((i + 1) / words.length * 100);
-          console.log(`Progresso: ${progress}%`);
-        }
-      } finally {
-        client.release();
+      for (let i = 0; i < words.length; i++) {
+        let word = words[i];
+
+        // Conecta palavras curtas
+        const connectShortWords = (word, words, index) => {
+          if (word.length <= 2) {
+            const nextIndex = index + 1;
+            const nextWord = words[nextIndex];
+            if (nextWord.length <= 2) {
+              const nextNextIndex = nextIndex + 1;
+              const nextNextWord = words[nextNextIndex];
+              if (nextNextWord.length <= 2) {
+                word = `${word} ${nextWord} ${nextNextWord}`;
+                index = nextNextIndex;
+              } else {
+                word = `${word} ${nextWord}`;
+                index = nextIndex;
+              }
+            } else {
+              word = `${word} ${nextWord}`;
+              index = nextIndex;
+            }
+          }
+          return { word, index };
+        };
+
+        connectionResult = connectShortWords(word, words, i);
+        word = connectionResult.word;
+        i = connectionResult.index;
+
+
+
+        await client.query('INSERT INTO words (word, index, who_delivered) VALUES ($1, $2, $3)', [word, i, 'SYSTEM']);
+
+        let progress = Math.round((i + 1) / words.length * 100);
+        console.log(`Progresso: ${progress}%`);
       }
-  
-      console.log('Banco de dados populado com sucesso!');
-    } catch (err) {
-      console.error('Erro ao popular o banco de dados:', err);
+    } finally {
+      client.release();
     }
-  };
+    
+    console.log('Banco de dados populado com sucesso!');
+    let endTime = new Date().getTime();
+    let timeDiff = endTime - startTime;
+    console.log(`Tempo de execução: ${timeDiff} ms`);
+
+  } catch (err) {
+      let endTime = new Date().getTime();
+      let timeDiff = endTime - startTime;
+      console.error(`Erro ao popular o banco de dados: ${err}`);
+      console.log(`Tempo de execução: ${timeDiff} ms`);
+  }
+};
   
   const getNextWord = async (userID) => {
     try {
@@ -71,7 +113,8 @@ const populateDatabase = async () => {
         if (userHasWordResult.rows.length > 0) {
           // Usuário já foi atrelado a uma palavra, retornar null
           console.log(`Usuário ${userID} já foi atrelado a uma palavra.`);
-          return null;
+          userHasWord = true;
+          return {hasWord: true, nextWord: null};
         }
   
         const result = await client.query(
@@ -82,45 +125,45 @@ const populateDatabase = async () => {
           let index = result.rows[0].index;
   
           // Check for short words (in uppercase)
-          if (word.length <= 2) {
-            const nextResult = await client.query(
-              'SELECT word FROM words WHERE index = $1',
-              [index + 1]
-            );
-            if (nextResult.rows.length > 0) {
-              const nextWord = nextResult.rows[0].word;
-              word = `${word} ${nextWord}`;
-              index += 1;
-            }
-          }
+          // if (word.length <= 2) {
+          //   const nextResult = await client.query(
+          //     'SELECT word FROM words WHERE index = $1',
+          //     [index + 1]
+          //   );
+          //   if (nextResult.rows.length > 0) {
+          //     const nextWord = nextResult.rows[0].word;
+          //     word = `${word} ${nextWord}`;
+          //     index += 1;
+          //   }
+          // }
   
-          // Check for "E A", "E O", etc. (in uppercase)
-          if (word.startsWith('E ') && word.length > 4) {
-            const nextResult = await client.query(
-              'SELECT word FROM words WHERE index = $1',
-              [index + 2]
-            );
-            if (nextResult.rows.length > 0) {
-              const nextWord = nextResult.rows[0].word;
-              word = `${word} ${nextWord}`;
-              index += 2;
-            }
-          }
+          // // Check for "E A", "E O", etc. (in uppercase)
+          // if (word.startsWith('E ') && word.length > 4) {
+          //   const nextResult = await client.query(
+          //     'SELECT word FROM words WHERE index = $1',
+          //     [index + 2]
+          //   );
+          //   if (nextResult.rows.length > 0) {
+          //     const nextWord = nextResult.rows[0].word;
+          //     word = `${word} ${nextWord}`;
+          //     index += 2;
+          //   }
+          // }
   
           await client.query(
-            'UPDATE words SET delivered = TRUE, date_delivered = NOW(), who_delivered = $1 WHERE index <= $2',
+            'UPDATE words SET delivered = TRUE, date_delivered = NOW(), who_delivered = $1 WHERE index = $2',
             [userID, index]
           );
-          return { word, index };
+          return {hasWord: false, nextWord: { word, index }};
         } else {
-          return null;
+          return {hasWord: false, nextWord: null};
         }
       } finally {
         client.release();
       }
     } catch (err) {
       console.error('Erro ao obter a próxima palavra:', err);
-      return null;
+      return {hasWord: false, nextWord: null};
     }
   };
 
@@ -132,8 +175,12 @@ app.get('/api/obter-palavra', async (req, res) => {
         return;
         }
         
-  const nextWord = await getNextWord(userID);
+  const  {hasWord, nextWord} = await getNextWord(userID);
 
+  if(hasWord){
+    res.status(400).json({ mensagem: 'Usuário já foi atrelado a uma palavra.' });
+    return;
+  }
   if (nextWord) {
     res.json(nextWord);
   } else {
@@ -175,7 +222,7 @@ waitUntilAvailable().then(async () => {
             console.log('Banco de dados já populado!');
             //mostre os 10 primeiros registros
 
-            pool.query('SELECT * FROM words ORDER BY index ASC LIMIT 10')
+            pool.query('SELECT * FROM words ORDER BY index ASC LIMIT 100')
             .then((res) => {
               console.log(res.rows);
             })
