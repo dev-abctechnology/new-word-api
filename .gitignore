@@ -1,0 +1,39 @@
+# Ignore arquivos gerados pelo Node.js
+node_modules/
+npm-debug.log
+yarn-error.log
+
+# Ignore arquivos gerados pelo Docker
+.dockerignore
+
+# Ignore arquivos de configuração
+.env
+.env.development
+.env.test
+.env.production
+
+# Ignore arquivos temporários
+tmp/
+*.tmp
+*.log
+*.lock
+
+# Ignore arquivos de cache
+.cache/
+
+# Ignore arquivos de testes
+coverage/
+tests/
+test/
+
+# Ignore arquivos de documentação
+docs/
+
+# Ignore arquivos de compilação
+build/
+dist/
+
+# Ignore arquivos de depuração
+*.db
+*.sqlite
+*.db-journal
