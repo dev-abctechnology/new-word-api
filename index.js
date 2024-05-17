@@ -38,51 +38,101 @@ const createTableWords = async () => {
 };
 
 const populateDatabase = async () => {
-  try {
-    const text = await readFileAsync(textFile, 'utf8');
-    const words = text.split(/\s+/);
-
-    const client = await pool.connect();
     try {
-      for (let i = 0; i < words.length; i++) {
-        await client.query('INSERT INTO words (word, index, who_delivered) VALUES ($1, $2, $3)', [words[i], i, 'SYSTEM']);
-        let progress = Math.round((i + 1) / words.length * 100);
-        console.log(`Progresso: ${progress}%`);
+      const text = await readFileAsync(textFile, 'utf8');
+      const words = text.toUpperCase().split(/\s+/); // Convert to uppercase
+  
+      const client = await pool.connect();
+      try {
+        for (let i = 0; i < words.length; i++) {
+          await client.query('INSERT INTO words (word, index, who_delivered) VALUES ($1, $2, $3)', [words[i], i, 'SYSTEM']);
+          let progress = Math.round((i + 1) / words.length * 100);
+          console.log(`Progresso: ${progress}%`);
+        }
+      } finally {
+        client.release();
       }
-    } finally {
-      client.release();
+  
+      console.log('Banco de dados populado com sucesso!');
+    } catch (err) {
+      console.error('Erro ao popular o banco de dados:', err);
     }
-
-    console.log('Banco de dados populado com sucesso!');
-  } catch (err) {
-    console.error('Erro ao popular o banco de dados:', err);
-  }
-};
-
-const getNextWord = async () => {
-  try {
-    const client = await pool.connect();
+  };
+  
+  const getNextWord = async (userID) => {
     try {
-      const result = await client.query('SELECT word, index FROM words WHERE delivered = FALSE ORDER BY index ASC LIMIT 1');
-      if (result.rows.length > 0) {
-        const word = result.rows[0].word;
-        const index = result.rows[0].index;
-        await client.query('UPDATE words SET delivered = TRUE, date_delivered = NOW(), who_delivered = $1 WHERE index = $2', ['USER', index]);
-        return { word, index };
-      } else {
-        return null;
+      const client = await pool.connect();
+      try {
+        // Verifica se o usuário já foi atrelado a uma palavra
+        const userHasWordResult = await client.query(
+          'SELECT 1 FROM words WHERE who_delivered = $1 AND delivered = TRUE',
+          [userID]
+        );
+        if (userHasWordResult.rows.length > 0) {
+          // Usuário já foi atrelado a uma palavra, retornar null
+          console.log(`Usuário ${userID} já foi atrelado a uma palavra.`);
+          return null;
+        }
+  
+        const result = await client.query(
+          'SELECT word, index FROM words WHERE delivered = FALSE ORDER BY index ASC LIMIT 1'
+        );
+        if (result.rows.length > 0) {
+          let word = result.rows[0].word;
+          let index = result.rows[0].index;
+  
+          // Check for short words (in uppercase)
+          if (word.length <= 2) {
+            const nextResult = await client.query(
+              'SELECT word FROM words WHERE index = $1',
+              [index + 1]
+            );
+            if (nextResult.rows.length > 0) {
+              const nextWord = nextResult.rows[0].word;
+              word = `${word} ${nextWord}`;
+              index += 1;
+            }
+          }
+  
+          // Check for "E A", "E O", etc. (in uppercase)
+          if (word.startsWith('E ') && word.length > 4) {
+            const nextResult = await client.query(
+              'SELECT word FROM words WHERE index = $1',
+              [index + 2]
+            );
+            if (nextResult.rows.length > 0) {
+              const nextWord = nextResult.rows[0].word;
+              word = `${word} ${nextWord}`;
+              index += 2;
+            }
+          }
+  
+          await client.query(
+            'UPDATE words SET delivered = TRUE, date_delivered = NOW(), who_delivered = $1 WHERE index <= $2',
+            [userID, index]
+          );
+          return { word, index };
+        } else {
+          return null;
+        }
+      } finally {
+        client.release();
       }
-    } finally {
-      client.release();
+    } catch (err) {
+      console.error('Erro ao obter a próxima palavra:', err);
+      return null;
     }
-  } catch (err) {
-    console.error('Erro ao obter a próxima palavra:', err);
-    return null;
-  }
-};
+  };
 
 app.get('/api/obter-palavra', async (req, res) => {
-  const nextWord = await getNextWord();
+    
+    const userID = req.query.userID;
+    if (!userID) {
+        res.status(400).json({ mensagem: 'O ID do usuário é obrigatório.' });
+        return;
+        }
+        
+  const nextWord = await getNextWord(userID);
 
   if (nextWord) {
     res.json(nextWord);
@@ -113,13 +163,23 @@ const waitUntilAvailable = async () => {
   console.error('Tempo limite excedido. O banco de dados não está disponível.');
 };
 
-waitUntilAvailable().then(() => {
-  createTableWords();
+waitUntilAvailable().then(async () => {
+ await createTableWords();
   //verify before populating
   pool.query('SELECT * FROM words')
       .then((res) => {
         if (res.rowCount === 0) {
           populateDatabase();
+        }
+        else{
+            console.log('Banco de dados já populado!');
+            //mostre os 10 primeiros registros
+
+            pool.query('SELECT * FROM words ORDER BY index ASC LIMIT 10')
+            .then((res) => {
+              console.log(res.rows);
+            })
+
         }
       })
       .catch((err) => {
