@@ -20,6 +20,8 @@ const textFile = 'biblia.txt';
 
 
 
+
+
 const createTableWords = async () => {
   try {
     const client = await pool.connect();
@@ -49,9 +51,8 @@ const populateDatabase = async () => {
     try {
       for (let i = 0; i < words.length; i++) {
         let word = words[i];
-
-        // Conecta palavras curtas
         const connectShortWords = (word, words, index) => {
+          
           if (word.length <= 2) {
             const nextIndex = index + 1;
             const nextWord = words[nextIndex];
