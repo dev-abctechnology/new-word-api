@@ -4,9 +4,151 @@ const fs = require('fs');
 const { promisify } = require('util');
 const readFileAsync = promisify(fs.readFile);
 require('dotenv').config();
+const promClient = require('prom-client');
+const expressMiddleware = require('express-prometheus-middleware');
+const path = require('path');
+const cors = require('cors');
+const multer = require('multer');
+const bodyParser = require('body-parser');
+const Tesseract = require('tesseract.js');
+
 
 const app = express();
-const port = 3000;
+const port = process.env.PORT || 3000;
+
+let corsOptions = {
+  origin: '*',
+  optionsSuccessStatus: 200
+};
+// configurar cors para aceitar requisições de qualquer origem
+app.use(cors(corsOptions));
+
+
+
+
+
+app.use(bodyParser.json());
+app.use(bodyParser.urlencoded({ extended: true }));
+
+
+
+//verifiy if the folder exists and create if not
+if (!fs.existsSync('uploads')) {
+  fs.mkdirSync('uploads');
+}
+
+
+// Configuração do multer para o upload de arquivos
+const storage = multer.diskStorage({
+  destination: (req, file, cb) => {
+    cb(null, process.env.UPLOAD_DIR || 'uploads/'); // Use UPLOAD_DIR do .env
+  },
+  filename: (req, file, cb) => {
+    const extensaoArquivo = path.extname(file.originalname);
+    cb(null, `${Date.now()}-${Math.round(Math.random() * 1E9)}${extensaoArquivo}`);
+  }
+});
+const upload = multer({ storage: storage });
+
+// Função para validar a extensão do arquivo
+const validarExtensaoArquivo = (arquivo) => {
+  const extensoesPermitidas = ['.png', '.jpg', '.jpeg', '.jfif', '.pjpeg', '.pjp'];
+  const extensaoArquivo = path.extname(arquivo.originalname).toLowerCase();
+  return extensoesPermitidas.includes(extensaoArquivo);
+};
+
+
+
+app.post('/upload', upload.single('imagem'), async (req, res) => {
+  try {
+    // Validações
+    if (!req.file) {
+      return res.status(400).json({ error: 'Nenhum arquivo de imagem enviado.' });
+    }
+    if (!validarExtensaoArquivo(req.file)) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: 'Extensão de arquivo inválida. São permitidos apenas arquivos PNG, JPG e JPEG.' });
+    }
+
+    let { texto } = req.body;
+    if (!texto) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: 'O campo "texto" é obrigatório.' });
+    }
+    if (typeof texto !== 'string') {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: 'O campo "texto" deve ser uma string.' });
+    }
+    if (texto.length === 0) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: 'O campo "texto" não pode ser vazio.' });
+    }
+    if (texto.length > 100) {
+      fs.unlinkSync(req.file.path);
+      return res.status(400).json({ error: 'O campo "texto" deve ter no máximo 100 caracteres.' });
+    }
+
+    const { path: imagePath } = req.file;
+    console.log(`Processando imagem: ${imagePath}`);
+
+    // OCR
+    const { data: { text } } = await Tesseract.recognize(
+      imagePath,
+      'por',
+      { logger: m => console.log(`Tesseract: ${m}`) }
+    );
+    const palavraExtraida = text.trim();
+    const palavraOriginalMinuscula = texto.trim();
+    const coincidencia = palavraExtraida === palavraOriginalMinuscula;
+
+    // Remover o arquivo após o processamento (opcional)
+    // fs.unlinkSync(imagePath);
+
+    res.json({
+      texto,
+      textoExtraido: palavraExtraida,
+      coincidencia
+    });
+    fs.unlinkSync(imagePath);
+  } catch (error) {
+    console.error('Erro ao processar OCR:', error);
+    if (error.code === 'ENOENT') {
+      return res.status(400).json({ error: 'Arquivo de imagem não encontrado.' });
+    }
+    res.status(500).json({ error: 'Erro ao processar OCR.' });
+  }
+  finally {
+    console.log('Processamento finalizado.');
+  }
+  });
+
+// Rota para servir arquivos estáticos (imagens)
+app.use('/uploads', express.static(process.env.UPLOAD_DIR || 'uploads/')); // Use UPLOAD_DIR do .env
+
+
+
+
+
+
+
+
+// Configuração do Prometheus
+const collectDefaultMetrics = promClient.collectDefaultMetrics;
+const Registry = promClient.Registry;
+const register = new Registry();
+collectDefaultMetrics({ register });
+
+const prometheusMiddleware = expressMiddleware({
+  metricsPath: '/metrics',
+  collectDefaultMetrics: true,
+  registry: register,
+});
+
+// Use o middleware do Prometheus
+app.use(prometheusMiddleware);
+
+
+
 
 const pool = new Pool({
   user: process.env.POSTGRES_USER,
@@ -164,7 +306,7 @@ const countRecords = async () => {
     }
   };
 
-app.get('/api/obter-palavra', async (req, res) => {
+app.get('/obter-palavra', async (req, res) => {
     
     const userID = req.query.userID;
     if (!userID) {
@@ -185,10 +327,42 @@ app.get('/api/obter-palavra', async (req, res) => {
   }
 });
 
-app.get('/api/contar-registros', async (req, res) => {
+app.get('/contar-registros', async (req, res) => {
   const totalRecords = await countRecords();
   res.json({ totalRecords });
 });
+
+
+// endpoint para resetar o banco de dados
+app.post('/resetar-banco', async (req, res) => {
+  try {
+    const client = await pool.connect();
+    try {
+      resetDatabaseToInitialState();
+      res.json({ mensagem: 'Banco de dados resetado com sucesso.' });
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error('Erro ao resetar o banco de dados:', err);
+    res.status(500).json({ mensagem: 'Erro ao resetar o banco de dados.' });
+  }
+});
+
+const resetDatabaseToInitialState = async () => {
+  try {
+    const client = await pool.connect();
+    try {
+      // remover as referencias de quem entregou as palavras 
+      await client.query('UPDATE words SET delivered = FALSE, date_delivered = NULL, who_delivered = "SYSTEM"');
+    } finally {
+      client.release();
+    }
+  } catch (err) {
+    console.error('Erro ao resetar o banco de dados para o estado inicial:', err);
+  }
+}
+
 
 app.listen(port, () => {
   console.log(`Servidor rodando em http://localhost:${port}`);
