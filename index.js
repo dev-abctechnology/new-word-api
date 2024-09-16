@@ -126,12 +126,6 @@ app.post('/upload', upload.single('imagem'), async (req, res) => {
 app.use('/uploads', express.static(process.env.UPLOAD_DIR || 'uploads/')); // Use UPLOAD_DIR do .env
 
 
-
-
-
-
-
-
 // Configuração do Prometheus
 const collectDefaultMetrics = promClient.collectDefaultMetrics;
 const Registry = promClient.Registry;
@@ -148,8 +142,6 @@ const prometheusMiddleware = expressMiddleware({
 app.use(prometheusMiddleware);
 
 
-
-
 const pool = new Pool({
   user: process.env.POSTGRES_USER,
   host: process.env.POSTGRES_HOST,
@@ -159,9 +151,6 @@ const pool = new Pool({
 });
 
 const textFile = 'biblia.txt';
-
-
-
 
 
 const createTableWords = async () => {
