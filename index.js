@@ -102,7 +102,6 @@ app.post('/upload', upload.single('imagem'), async (req, res) => {
     const coincidencia = palavraExtraida === palavraOriginalMinuscula;
 
     // Remover o arquivo após o processamento (opcional)
-    // fs.unlinkSync(imagePath);
 
     res.json({
       texto,
